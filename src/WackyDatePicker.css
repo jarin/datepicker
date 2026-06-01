@@ -1,0 +1,9 @@
+.wacky {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* It's a guest in someone else's UI — render at half scale (layout footprint
+     shrinks too, unlike a transform). */
+  zoom: 0.5;
+}

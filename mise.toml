@@ -1,0 +1,76 @@
+[tools]
+node = "22"
+python = "3.12"
+uv = "latest"
+
+[env]
+# Load from .env file if it exists
+_.file = ".env"
+
+# Default PostgreSQL connection (can be overridden in .env)
+PGHOST = "localhost"
+PGPORT = "25432"
+PGDATABASE = "searoute"
+PGUSER = "searoute"
+
+[tasks.build]
+description = "Build TypeScript (server + client)"
+run = "npm run build"
+
+[tasks.dev]
+description = "Build and start development server"
+run = "npm run dev"
+
+[tasks.test]
+description = "Run all tests (build, sanity, e2e)"
+run = "npm run test:all"
+
+[tasks."test:sanity"]
+description = "Run API sanity tests"
+run = "npm run test:sanity"
+
+[tasks."test:e2e"]
+description = "Run Playwright E2E tests"
+run = "npm run test:e2e"
+
+[tasks."download:data"]
+description = "Download external data sources"
+run = "./scripts/download-data.sh"
+
+[tasks."setup:postgres"]
+description = "Set up PostgreSQL database"
+run = "./scripts/setup-postgres.sh"
+
+[tasks."setup:land"]
+description = "Download and import Natural Earth land polygons"
+run = """
+#!/bin/bash
+set -e
+mkdir -p data/naturalearth
+if [[ ! -f data/naturalearth/ne_10m_land.shp ]]; then
+  echo "Downloading Natural Earth land polygons..."
+  curl -L -o data/naturalearth/ne_10m_land.zip \
+    "https://naciscdn.org/naturalearth/10m/physical/ne_10m_land.zip"
+  unzip -o data/naturalearth/ne_10m_land.zip -d data/naturalearth/
+fi
+echo "Importing to PostgreSQL..."
+ogr2ogr -f PostgreSQL "PG:host=$PGHOST port=$PGPORT dbname=$PGDATABASE user=$PGUSER" \
+  data/naturalearth/ne_10m_land.shp -nln land_raw -overwrite \
+  -nlt PROMOTE_TO_MULTI
+echo "Creating land_simplified with correct column name..."
+psql -h $PGHOST -p $PGPORT -d $PGDATABASE -U $PGUSER -c "
+DROP TABLE IF EXISTS land_simplified;
+CREATE TABLE land_simplified AS SELECT ogc_fid, wkb_geometry as geom FROM land_raw;
+CREATE INDEX ON land_simplified USING GIST(geom);
+DROP TABLE land_raw;
+"
+echo "Done: land_simplified table created"
+"""
+
+[tasks."db:psql"]
+description = "Connect to database with psql"
+run = "psql -h $PGHOST -p $PGPORT -d $PGDATABASE -U $PGUSER"
+
+[tasks."db:tunnel"]
+description = "Open SSH tunnel to remote PostgreSQL (adjust host as needed)"
+run = "ssh -L 25432:localhost:5432 your-server -N"
