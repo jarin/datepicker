@@ -1,0 +1,65 @@
+.tess {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.tess-canvas {
+  border-radius: 16px;
+  background: #0d1020;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  cursor: grab;
+  touch-action: none;
+}
+.tess-canvas:active {
+  cursor: grabbing;
+}
+.tess-canvas:focus-visible {
+  outline: 2px solid rgba(120, 160, 255, 0.6);
+  outline-offset: 2px;
+}
+
+.tess-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 22px;
+  font-variant-numeric: tabular-nums;
+}
+.tess-ts {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.tess-axis-hint {
+  font-size: 13px;
+  opacity: 0.6;
+}
+.tess-hint {
+  font-size: 12.5px;
+  opacity: 0.5;
+}
+
+.tess-legend {
+  display: flex;
+  flex-direction: row;
+  gap: 16px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.8;
+}
+.tess-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.tess-legend-item::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dot-color);
+}
