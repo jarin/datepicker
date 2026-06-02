@@ -39,8 +39,7 @@ export function App() {
       {tab === "Stochastic" && (
         <section className="demo-panel">
           <p className="hdt-blurb">
-            Whack-a-mole meets date selection. Digits appear at random positions
-            and you click to lock them in. Chaos is the only calendar you need.
+          Pull lever to win bigly.
           </p>
           <WackyDatePicker value={date} onChange={setDate} />
           <div className="demo-output">
@@ -63,7 +62,7 @@ export function App() {
             drag to apply a hyperbolic translation. Because area grows{" "}
             <em>exponentially</em> with radius under constant negative curvature,
             the whole fits inside one finite
-            disk, with leaves resting near the conformal boundary at infinity, telling us that time is indeed finite.
+            disk, with leaves resting near the conformal boundary at infinity, telling us that time is indeed infinite.
             Or not.
           </p>
           <HyperbolicDateTimePicker value={moment} onChange={setMoment} />
@@ -82,12 +81,7 @@ export function App() {
       {tab === "Dimensional" && (
         <section className="demo-panel">
           <p className="hdt-blurb">
-            A tesseract — the 4D hypercube — has 16 vertices, 32 edges, and 8 cubic
-            cells. Each spatial axis maps to a temporal dimension: <strong>X → Year</strong>,{" "}
-            <strong>Y → Month</strong>, <strong>Z → Day</strong>, <strong>W → Time</strong>.
-            A double perspective projection (4D → 3D → 2D) renders the wireframe; drag to
-            tumble in 3D, shift+drag to rotate through the fourth dimension. Click an axis
-            to select it, then scroll or drag to adjust the value.
+            Some say time is an extra dimension in space-time. This picker builds on that statement.
           </p>
           <TesseractDateTimePicker value={tessMoment} onChange={setTessMoment} />
           <div className="demo-output">
