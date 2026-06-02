@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase-2 spike — hyperbolic {p,q} tiling, Möbius navigation</title>
+<style>
+  html, body { margin: 0; background: #0a0d16; color: #cdd6f4; font: 13px system-ui; }
+  #wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; }
+  canvas { border-radius: 50%; background: #0d1020; box-shadow: 0 10px 40px rgba(0,0,0,.5); cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  #hud { font-variant-numeric: tabular-nums; opacity: .85; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="cv"></canvas>
+  <div id="hud">initialising…</div>
+</div>
+<script>
+/* ---------------- complex + SU(1,1) (inlined; mirrors spike/poincare.mjs) ------------- */
+const cx_ = (re, im=0) => ({re, im});
+const add = (x,y)=>cx_(x.re+y.re, x.im+y.im);
+const sub = (x,y)=>cx_(x.re-y.re, x.im-y.im);
+const mul = (x,y)=>cx_(x.re*y.re - x.im*y.im, x.re*y.im + x.im*y.re);
+const conj= (x)=>cx_(x.re,-x.im);
+const neg = (x)=>cx_(-x.re,-x.im);
+const abs2= (x)=>x.re*x.re + x.im*x.im;
+const cabs= (x)=>Math.hypot(x.re,x.im);
+const cdiv= (x,y)=>{const d=abs2(y);return cx_((x.re*y.re+x.im*y.im)/d,(x.im*y.re-x.re*y.im)/d);};
+const cscale=(x,s)=>cx_(x.re*s,x.im*s);
+const ident=()=>({a:cx_(1),b:cx_(0)});
+const recenter=(p)=>{const s=Math.sqrt(Math.max(1e-12,1-abs2(p)));return {a:cx_(1/s),b:cscale(neg(p),1/s)};};
+const compose=(m2,m1)=>({a:add(mul(m2.a,m1.a),mul(m2.b,conj(m1.b))), b:add(mul(m2.a,m1.b),mul(m2.b,conj(m1.a)))});
+const applyM=(m,z)=>cdiv(add(mul(m.a,z),m.b), add(mul(conj(m.b),z),conj(m.a)));
+const normalize=(m)=>{const s=Math.sqrt(Math.max(1e-12,abs2(m.a)-abs2(m.b)));return {a:cscale(m.a,1/s),b:cscale(m.b,1/s)};};
+
+/* ---------------- geodesics: circle through a, b orthogonal to the unit circle ---------- */
+// such a circle also passes through the inverse point a* = a/|a|^2
+function circum(p1,p2,p3){
+  const ax=p1.re,ay=p1.im,bx=p2.re,by=p2.im,cxp=p3.re,cyp=p3.im;
+  const d=2*(ax*(by-cyp)+bx*(cyp-ay)+cxp*(ay-by));
+  if (Math.abs(d)<1e-12) return null; // collinear -> treat as straight geodesic (diameter)
+  const a2=ax*ax+ay*ay, b2=bx*bx+by*by, c2=cxp*cxp+cyp*cyp;
+  const ux=(a2*(by-cyp)+b2*(cyp-ay)+c2*(ay-by))/d;
+  const uy=(a2*(cxp-bx)+b2*(ax-cxp)+c2*(bx-ax))/d;
+  const c=cx_(ux,uy); return {c, r:cabs(sub(p1,c))};
+}
+function geodesic(a,b){
+  const ia=abs2(a)<1e-18 ? null : cscale(a,1/abs2(a)); // inverse of a in unit circle
+  if(!ia) return {line:true};
+  const g=circum(a,b,ia);
+  return g ? {line:false, c:g.c, r:g.r} : {line:true};
+}
+// hyperbolic reflection across the geodesic through edge (a,b) = inversion in that circle
+function reflectEdge(a,b,z){
+  const g=geodesic(a,b);
+  if(g.line){ // diameter: reflect across the line through origin and a
+    const u=cscale(a,1/Math.max(1e-9,cabs(a))); // unit direction
+    return mul(mul(u,u), conj(z)); // e^{2iφ} conj(z)
+  }
+  const d=sub(z,g.c); const k=(g.r*g.r)/Math.max(1e-18,abs2(d));
+  return add(g.c, cscale(d,k));
+}
+
+/* ---------------- regular {p,q} tiling by edge-reflection BFS ---------------- */
+function buildTiling(p,q,{boundary=0.92, maxTiles=2600}={}){
+  const coshR = Math.cos(Math.PI/p)/Math.sin(Math.PI/q);
+  const R = Math.acosh(coshR);
+  const rv = Math.tanh(R/2);                       // Euclidean circumradius of central tile
+  const poly0 = Array.from({length:p},(_,k)=>{
+    const t = 2*Math.PI*k/p + Math.PI/p;           // rotate so an edge faces +x
+    return cx_(rv*Math.cos(t), rv*Math.sin(t));
+  });
+  const centroid=(poly)=>{let s=cx_(0);for(const v of poly)s=add(s,v);return cscale(s,1/poly.length);};
+  const key=(poly)=>{const c=centroid(poly);return Math.round(c.re*700)+","+Math.round(c.im*700);};
+  const seen=new Set(), tiles=[], queue=[{poly:poly0,depth:0}];
+  seen.add(key(poly0));
+  while(queue.length && tiles.length<maxTiles){
+    const {poly,depth}=queue.shift();
+    tiles.push({poly,depth});
+    for(let i=0;i<poly.length;i++){
+      const a=poly[i], b=poly[(i+1)%poly.length];
+      const np=poly.map(v=>reflectEdge(a,b,v));
+      const c=centroid(np);
+      if(cabs(c)>boundary) continue;               // stop near the ideal boundary
+      const kk=key(np);
+      if(seen.has(kk)) continue;
+      seen.add(kk);
+      queue.push({poly:np, depth:depth+1});
+    }
+  }
+  return {tiles, R, rv};
+}
+
+/* ---------------- rendering ---------------- */
+const params = new URLSearchParams(location.search);
+const P = +(params.get('p')||7), Q = +(params.get('q')||3);
+const MAXT = +(params.get('tiles')||2200);
+const cv = document.getElementById('cv'), hud=document.getElementById('hud');
+const ctx = cv.getContext('2d');
+const SIZE = 560, DPR = Math.min(2, window.devicePixelRatio||1);
+cv.width=SIZE*DPR; cv.height=SIZE*DPR; cv.style.width=SIZE+'px'; cv.style.height=SIZE+'px';
+ctx.scale(DPR,DPR);
+const CCT=SIZE/2, RAD=SIZE/2-6;
+const toScreen=(z)=>({x:CCT+z.re*RAD, y:CCT-z.im*RAD});
+
+const MINPX = +(params.get('minpx')||2.0);   // cull tiles smaller than this on screen
+const {tiles, rv} = buildTiling(P,Q,{maxTiles:MAXT});
+let V = ident();
+
+function strokeGeodesic(za,zb){
+  const a=applyM(V,za), b=applyM(V,zb);
+  if(cabs(a)>1.02 && cabs(b)>1.02) return;          // fully outside
+  const g=geodesic(a,b);
+  const A=toScreen(a), B=toScreen(b);
+  if(g.line || g.r>60){ ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); return; }
+  const C=toScreen(g.c), rPix=g.r*RAD;
+  let a0=Math.atan2(A.y-C.y, A.x-C.x), a1=Math.atan2(B.y-C.y, B.x-C.x);
+  let d=a1-a0; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI;
+  ctx.moveTo(A.x,A.y);
+  ctx.arc(C.x,C.y,rPix,a0,a0+d, d<0);
+}
+
+let drawn=0;
+function render(){
+  ctx.clearRect(0,0,SIZE,SIZE);
+  // clip to the Poincaré disk
+  ctx.save();
+  ctx.beginPath(); ctx.arc(CCT,CCT,RAD,0,2*Math.PI); ctx.clip();
+  drawn=0;
+  for(const t of tiles){
+    // skip tiles whose transformed centroid is essentially at the boundary
+    let cen=cx_(0); for(const v of t.poly) cen=add(cen,v); cen=cscale(cen,1/t.poly.length);
+    const tc=applyM(V,cen);
+    // focus+context culling: a tile's on-screen size shrinks ∝ (1−|z|²) toward
+    // the boundary; skip anything below a pixel or two (invisible context).
+    const screenPx = RAD*(1-abs2(tc))*rv;
+    if(screenPx < MINPX) continue;
+    drawn++;
+    const hue=(t.depth*47)%360;
+    ctx.strokeStyle=`hsla(${hue},70%,65%,0.9)`;
+    ctx.lineWidth=Math.max(0.4, 1.4*(1-cabs(tc)));
+    ctx.beginPath();
+    for(let i=0;i<t.poly.length;i++) strokeGeodesic(t.poly[i], t.poly[(i+1)%t.poly.length]);
+    ctx.stroke();
+  }
+  ctx.restore();
+  // disk outline
+  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(CCT,CCT,RAD,0,2*Math.PI); ctx.stroke();
+}
+
+/* ---------------- animate + measure ---------------- */
+const frames=[]; let last=performance.now(), t0=last, running=true, angle=0;
+window.__perfReady=false;
+function loop(now){
+  const dt=now-last; last=now; frames.push(dt);
+  // orbit the view centre within the tiling (bounded, recompute-from-anchor —
+  // the Phase-1-recommended path). Keeps content on screen while stressing the
+  // full transform of every visible tile each frame.
+  angle += 0.03;
+  const r=Math.tanh(0.5); // orbit at hyperbolic radius ρ≈1
+  V=recenter(cx_(r*Math.cos(angle), r*Math.sin(angle)));
+  render();
+  const elapsed=now-t0;
+  hud.textContent=`{${P},${Q}}  tiles:${tiles.length} drawn:${drawn}  frame:${dt.toFixed(1)}ms`;
+  if(running && (elapsed<4000)){ requestAnimationFrame(loop); }
+  else {
+    running=false;
+    const fr=frames.slice(5); // drop warmup
+    fr.sort((x,y)=>x-y);
+    const sum=fr.reduce((a,b)=>a+b,0);
+    const p=(q)=>fr[Math.min(fr.length-1, Math.floor(q*fr.length))];
+    window.__perf={
+      pq:`{${P},${Q}}`, tiles:tiles.length, drawn,
+      frames:fr.length, avgMs:+(sum/fr.length).toFixed(2),
+      avgFps:+(1000/(sum/fr.length)).toFixed(1),
+      p50ms:+p(0.5).toFixed(2), p95ms:+p(0.95).toFixed(2),
+      worstMs:+fr[fr.length-1].toFixed(2),
+    };
+    window.__perfReady=true;
+    hud.textContent=`{${P},${Q}} tiles:${tiles.length} drawn:${drawn} — avg ${window.__perf.avgFps}fps (p95 ${window.__perf.p95ms}ms)`;
+    render();
+  }
+}
+requestAnimationFrame(loop);
+
+/* drag-to-pan (Möbius recenter so the grabbed point follows the cursor) */
+let dragging=null;
+const evToDisk=(e)=>{const r=cv.getBoundingClientRect();return cx_((e.clientX-r.left-CCT)/RAD, -(e.clientY-r.top-CCT)/RAD);};
+cv.addEventListener('pointerdown',e=>{dragging=applyM(V,evToDisk(e)); running=false; cv.setPointerCapture(e.pointerId);});
+cv.addEventListener('pointermove',e=>{ if(!dragging)return; const cur=evToDisk(e);
+  // move so the world point under the grab follows the cursor
+  V=normalize(compose(recenter(cur), compose(recenter(dragging) , (function(){/*world->grab*/return ident();})() )));
+  // simpler: recompute V so that dragging(world) maps to cur
+  V=solveDrag(dragging,cur); render();});
+cv.addEventListener('pointerup',()=>{dragging=null;});
+function solveDrag(worldPt, target){
+  // want V'(worldPt)=target. Build V' = recenter(-target-ish): translate worldPt->0 then 0->target
+  const toO=recenter(worldPt); const fromO={a:recenter(target).a, b:neg(recenter(target).b)};
+  return normalize(compose(fromO,toO));
+}
+</script>
+</body>
+</html>

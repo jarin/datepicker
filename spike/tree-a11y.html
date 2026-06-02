@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase-4 spike — accessible hyperbolic date tree</title>
+<style>
+  html,body{margin:0;background:#0a0d16;color:#cdd6f4;font:13px system-ui;}
+  #wrap{display:flex;gap:14px;align-items:flex-start;padding:10px;}
+  canvas{border-radius:50%;background:#0d1020;box-shadow:0 10px 40px rgba(0,0,0,.5);}
+  /* The accessible widget: a real ARIA tree that drives the visual. */
+  #tree{width:220px;max-height:560px;overflow:auto;background:#11162a;border-radius:10px;padding:6px;outline:none;}
+  [role=treeitem]{padding:3px 6px;border-radius:6px;cursor:pointer;white-space:nowrap;}
+  [role=treeitem]:focus{outline:2px solid #ffd24a;background:#2a2f48;}
+  [aria-selected=true]{background:#274d34;color:#bdf5cf;}
+  .lvl1{font-weight:700;} .lvl2{padding-left:16px;} .lvl3{padding-left:30px;}
+  #hud{opacity:.85;margin-top:6px;}
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div>
+    <canvas id="cv" aria-hidden="true"></canvas>
+    <div id="hud">…</div>
+  </div>
+  <div id="tree" role="tree" aria-label="Pick a date" tabindex="0"></div>
+</div>
+<div id="live" class="sr" aria-live="polite"></div>
+<script>
+/* ---- complex + SU(1,1) ---- */
+const cx_=(re,im=0)=>({re,im});
+const add=(x,y)=>cx_(x.re+y.re,x.im+y.im), sub=(x,y)=>cx_(x.re-y.re,x.im-y.im);
+const mul=(x,y)=>cx_(x.re*y.re-x.im*y.im,x.re*y.im+x.im*y.re), conj=(x)=>cx_(x.re,-x.im), neg=(x)=>cx_(-x.re,-x.im);
+const abs2=(x)=>x.re*x.re+x.im*x.im, cabs=(x)=>Math.hypot(x.re,x.im);
+const cdiv=(x,y)=>{const d=abs2(y);return cx_((x.re*y.re+x.im*y.im)/d,(x.im*y.re-x.re*y.im)/d);};
+const cscale=(x,s)=>cx_(x.re*s,x.im*s);
+const ident=()=>({a:cx_(1),b:cx_(0)});
+const recenter=(p)=>{const s=Math.sqrt(Math.max(1e-12,1-abs2(p)));return {a:cx_(1/s),b:cscale(neg(p),1/s)};};
+const inv=(m)=>({a:conj(m.a),b:neg(m.b)});
+const compose=(m2,m1)=>({a:add(mul(m2.a,m1.a),mul(m2.b,conj(m1.b))),b:add(mul(m2.a,m1.b),mul(m2.b,conj(m1.a)))});
+const applyM=(m,z)=>cdiv(add(mul(m.a,z),m.b),add(mul(conj(m.b),z),conj(m.a)));
+const normalize=(m)=>{const s=Math.sqrt(Math.max(1e-12,abs2(m.a)-abs2(m.b)));return {a:cscale(m.a,1/s),b:cscale(m.b,1/s)};};
+const place=(p)=>inv(recenter(p));
+const placeOut=(step)=>place(cx_(Math.tanh(step/2),0));
+const rot=(phi)=>({a:cx_(Math.cos(phi/2),Math.sin(phi/2)),b:cx_(0)});
+
+/* ---- params + tree (same layout as tree.html) ---- */
+const P=new URLSearchParams(location.search);
+const RANGE=+(P.get('range')||5);
+const S=[1.7,1.95,1.7], EXPAND=5.0, MAXAP=2.5, MINAP=0.40;
+const NOW={y:2026,m:6,d:2};
+const isLeap=(y)=>(y%4===0&&y%100!==0)||y%400===0;
+const dim=(y,m)=>[31,isLeap(y)?29:28,31,30,31,30,31,31,30,31,30,31][m-1];
+const monNames=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const root={level:0,children:[],parent:null};
+for(let y=NOW.y-RANGE;y<=NOW.y+RANGE;y++){const yn={level:1,y,children:[],parent:root};root.children.push(yn);
+  for(let m=1;m<=12;m++){const mn={level:2,y,m,children:[],parent:yn};yn.children.push(mn);
+    for(let d=1;d<=dim(y,m);d++)mn.children.push({level:3,y,m,d,children:[],parent:mn});}}
+function layout(node,T,aperture){node.T=T;node.z=applyM(T,cx_(0));const n=node.children.length;if(!n)return;const step=S[node.level];
+  for(let i=0;i<n;i++){const phi=node.level===0?(-Math.PI+(i+0.5)*(2*Math.PI/n)):(n===1?0:-aperture+(i+0.5)*(2*aperture/n));
+    const Tc=normalize(compose(T,compose(rot(phi),placeOut(step))));const slotHalf=node.level===0?Math.PI/n:aperture/n;
+    layout(node.children[i],Tc,Math.max(MINAP,Math.min(MAXAP,slotHalf*EXPAND)));}}
+layout(root,ident(),Math.PI);
+const nodes=[];(function c(n){nodes.push(n);for(const k of n.children)c(k);})(root);
+const nodeId=(n)=>n.level===0?'root':n.level===1?'y'+n.y:n.level===2?'m'+n.y+'_'+n.m:'d'+n.y+'_'+n.m+'_'+n.d;
+const label=(n)=>n.level===1?`${n.y}`:n.level===2?`${monNames[n.m-1]} ${n.y}`:`${n.d} ${monNames[n.m-1]} ${n.y}`;
+
+/* ---- canvas (decorative; aria-hidden) ---- */
+const cv=document.getElementById('cv'),hud=document.getElementById('hud'),ctx=cv.getContext('2d');
+const SIZE=440,DPR=Math.min(2,devicePixelRatio||1);
+cv.width=SIZE*DPR;cv.height=SIZE*DPR;cv.style.width=SIZE+'px';cv.style.height=SIZE+'px';ctx.scale(DPR,DPR);
+const CC=SIZE/2,RAD=SIZE/2-6;const toScreen=(z)=>({x:CC+z.re*RAD,y:CC-z.im*RAD});
+let V=ident(), selected=null, focusNode=root.children[0];
+function render(){ctx.clearRect(0,0,SIZE,SIZE);ctx.save();ctx.beginPath();ctx.arc(CC,CC,RAD,0,2*Math.PI);ctx.clip();
+  ctx.lineWidth=1;ctx.strokeStyle='rgba(150,170,230,.22)';ctx.beginPath();
+  for(const n of nodes){if(!n.parent)continue;const a=applyM(V,n.z),b=applyM(V,n.parent.z);if(cabs(a)>1.05&&cabs(b)>1.05)continue;
+    const A=toScreen(a),B=toScreen(b);ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);}ctx.stroke();
+  for(const n of nodes){const tz=applyM(V,n.z);const a2=abs2(tz);if(a2>0.9995)continue;const f=1-a2;const s=toScreen(tz);
+    const isF=n===focusNode,isSel=selected&&n.level===3&&n.y===selected.y&&n.m===selected.m&&n.d===selected.d;
+    const r=Math.max(0.8,(n.level===1?4.2:n.level===2?3.2:2.4)*f);
+    ctx.beginPath();ctx.arc(s.x,s.y,r,0,2*Math.PI);ctx.fillStyle=isSel?'#7af29a':`hsla(${[210,150,40][n.level-1]},70%,68%,${0.3+0.65*f})`;ctx.fill();
+    if(isF){ctx.strokeStyle='#ffd24a';ctx.lineWidth=2;ctx.beginPath();ctx.arc(s.x,s.y,r+4,0,2*Math.PI);ctx.stroke();}}
+  ctx.restore();ctx.strokeStyle='rgba(255,255,255,.22)';ctx.lineWidth=2;ctx.beginPath();ctx.arc(CC,CC,RAD,0,2*Math.PI);ctx.stroke();
+  hud.textContent=`focus: ${label(focusNode)}  ·  selected: ${selected?`${selected.d} ${monNames[selected.m-1]} ${selected.y}`:'—'}`;}
+
+/* ---- accessible ARIA tree (drives the view); only the focus path is expanded ---- */
+const treeEl=document.getElementById('tree'),live=document.getElementById('live');
+const ancestor=(n,lvl)=>{while(n&&n.level>lvl)n=n.parent;return n&&n.level===lvl?n:null;};
+function buildAria(){
+  treeEl.innerHTML='';
+  const fy=ancestor(focusNode,1), fm=ancestor(focusNode,2);
+  for(const y of root.children){
+    treeEl.appendChild(item(y,1, y.children.length>0, fy===y));
+    if(fy===y) for(const m of y.children){
+      treeEl.appendChild(item(m,2, m.children.length>0, fm===m));
+      if(fm===m) for(const d of m.children) treeEl.appendChild(item(d,3,false,false));
+    }
+  }
+  const el=document.getElementById('ti-'+nodeId(focusNode)); if(el) el.focus();
+}
+function item(n,lvl,expandable,expanded){
+  const el=document.createElement('div'); el.className='lvl'+lvl; el.id='ti-'+nodeId(n);
+  el.setAttribute('role','treeitem'); el.setAttribute('aria-level',lvl);
+  el.setAttribute('aria-setsize',(n.parent?n.parent.children.length:root.children.length));
+  el.setAttribute('aria-posinset',(n.parent?n.parent.children.indexOf(n):root.children.indexOf(n))+1);
+  if(expandable) el.setAttribute('aria-expanded',expanded?'true':'false');
+  if(n.level===3) el.setAttribute('aria-selected', (selected&&n.y===selected.y&&n.m===selected.m&&n.d===selected.d)?'true':'false');
+  el.tabIndex = (n===focusNode)?0:-1;
+  el.textContent = n.level===1?n.y:n.level===2?monNames[n.m-1]:n.d;
+  el.addEventListener('click',()=>{ if(n.level===3){selectNode(n);} else setFocus(n.children[0]||n); });
+  return el;
+}
+function announce(){ live.textContent = (selected&&focusNode.level===3&&focusNode.y===selected.y&&focusNode.m===selected.m&&focusNode.d===selected.d)
+  ? `Selected ${label(focusNode)}` : label(focusNode); }
+function setFocus(n){ focusNode=n; V=normalize(recenter(n.parent?n.parent.z:cx_(0))); buildAria(); render(); announce(); }
+function selectNode(n){ selected={y:n.y,m:n.m,d:n.d}; focusNode=n; buildAria(); render(); announce(); }
+
+const sibs=(n)=>n.parent?n.parent.children:[root]; const ix=(n)=>sibs(n).indexOf(n);
+function onKey(e){
+  const k=e.key; let h=true;
+  if(k==='ArrowDown'){const s=sibs(focusNode);setFocus(s[Math.min(s.length-1,ix(focusNode)+1)]);}
+  else if(k==='ArrowUp'){const s=sibs(focusNode);setFocus(s[Math.max(0,ix(focusNode)-1)]);}
+  else if(k==='ArrowRight'){ if(focusNode.children.length) setFocus(focusNode.children[0]); }
+  else if(k==='ArrowLeft'){ if(focusNode.parent&&focusNode.parent.level>=1) setFocus(focusNode.parent); }
+  else if(k==='Home'){const s=sibs(focusNode);setFocus(s[0]);}
+  else if(k==='End'){const s=sibs(focusNode);setFocus(s[s.length-1]);}
+  else if(k==='Enter'||k===' '){ if(focusNode.level===3) selectNode(focusNode); else if(focusNode.children.length) setFocus(focusNode.children[0]); }
+  else h=false;
+  if(h){e.preventDefault();}
+}
+treeEl.addEventListener('keydown',onKey);
+window.addEventListener('keydown',(e)=>{ if(document.activeElement===treeEl||document.activeElement?.getAttribute('role')==='treeitem') return; }); // items handle it
+
+/* ---- test hooks ---- */
+window.__a11y={
+  resetFocus(){ setFocus(root.children[0]); },
+  focusLabel(){ return label(focusNode); },
+  selected(){ return selected; },
+  ariaInfo(){ const items=treeEl.querySelectorAll('[role=treeitem]'); const f=document.getElementById('ti-'+nodeId(focusNode));
+    return { treeRole:treeEl.getAttribute('role'), itemCount:items.length,
+      focusedRole:f?.getAttribute('role'), focusedLevel:f?.getAttribute('aria-level'),
+      focusedTabindex:f?.tabIndex, focusIsActiveElement:document.activeElement===f,
+      selectedCount:treeEl.querySelectorAll('[aria-selected=true]').length, live:live.textContent }; },
+  // min on-screen spacing (px) between adjacent day targets when a month is focused
+  dayTargetPx(y,m){ const mn=nodes.find(n=>n.level===2&&n.y===y&&n.m===m); V=normalize(recenter(mn.z)); render();
+    let mind=Infinity,prev=null; for(const d of mn.children){const s=toScreen(applyM(V,d.z)); if(prev){const dd=Math.hypot(s.x-prev.x,s.y-prev.y); if(dd<mind)mind=dd;} prev=s;}
+    return +mind.toFixed(1); },
+};
+buildAria(); render(); window.__ready=true;
+</script>
+</body>
+</html>

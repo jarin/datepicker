@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase-3b spike — hyperbolic year→month→day tree</title>
+<style>
+  html,body{margin:0;background:#0a0d16;color:#cdd6f4;font:13px system-ui;}
+  #wrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px;}
+  canvas{border-radius:50%;background:#0d1020;box-shadow:0 10px 40px rgba(0,0,0,.5);cursor:grab;}
+  canvas:active{cursor:grabbing;}
+  #hud{font-variant-numeric:tabular-nums;opacity:.9;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv"></canvas><div id="hud">…</div></div>
+<script>
+/* ---- complex + SU(1,1) ---- */
+const cx_=(re,im=0)=>({re,im});
+const add=(x,y)=>cx_(x.re+y.re,x.im+y.im), sub=(x,y)=>cx_(x.re-y.re,x.im-y.im);
+const mul=(x,y)=>cx_(x.re*y.re-x.im*y.im,x.re*y.im+x.im*y.re), conj=(x)=>cx_(x.re,-x.im), neg=(x)=>cx_(-x.re,-x.im);
+const abs2=(x)=>x.re*x.re+x.im*x.im, cabs=(x)=>Math.hypot(x.re,x.im);
+const cdiv=(x,y)=>{const d=abs2(y);return cx_((x.re*y.re+x.im*y.im)/d,(x.im*y.re-x.re*y.im)/d);};
+const cscale=(x,s)=>cx_(x.re*s,x.im*s);
+const ident=()=>({a:cx_(1),b:cx_(0)});
+const recenter=(p)=>{const s=Math.sqrt(Math.max(1e-12,1-abs2(p)));return {a:cx_(1/s),b:cscale(neg(p),1/s)};};
+const inv=(m)=>({a:conj(m.a),b:neg(m.b)});
+const compose=(m2,m1)=>({a:add(mul(m2.a,m1.a),mul(m2.b,conj(m1.b))),b:add(mul(m2.a,m1.b),mul(m2.b,conj(m1.a)))});
+const applyM=(m,z)=>cdiv(add(mul(m.a,z),m.b),add(mul(conj(m.b),z),conj(m.a)));
+const normalize=(m)=>{const s=Math.sqrt(Math.max(1e-12,abs2(m.a)-abs2(m.b)));return {a:cscale(m.a,1/s),b:cscale(m.b,1/s)};};
+const hdist=(z,w)=>2*Math.atanh(Math.min(1-1e-15,cabs(cdiv(sub(z,w),sub(cx_(1),mul(conj(w),z))))));
+const place=(p)=>inv(recenter(p));                       // sends 0 -> p
+const placeOut=(step)=>place(cx_(Math.tanh(step/2),0));  // 0 -> distance `step` along +x
+const rot=(phi)=>({a:cx_(Math.cos(phi/2),Math.sin(phi/2)),b:cx_(0)});
+
+/* ---- params / tuning ---- */
+const P=new URLSearchParams(location.search);
+const RANGE=+(P.get('range')||5);                        // ± years
+const S=[+(P.get('s0')||1.7), +(P.get('s1')||1.95), +(P.get('s2')||1.7)]; // step root→yr, yr→mo, mo→day
+const EXPAND=+(P.get('expand')||5.0), MAXAP=+(P.get('maxap')||2.5), MINAP=+(P.get('minap')||0.40);
+const NOW={y:2026,m:6,d:2};
+const isLeap=(y)=>(y%4===0&&y%100!==0)||y%400===0;
+const dim=(y,m)=>[31,isLeap(y)?29:28,31,30,31,30,31,31,30,31,30,31][m-1];
+const monNames=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+/* ---- build the tree ---- */
+const root={level:0,children:[],parent:null};
+for(let y=NOW.y-RANGE;y<=NOW.y+RANGE;y++){
+  const yn={level:1,y,children:[],parent:root}; root.children.push(yn);
+  for(let m=1;m<=12;m++){
+    const mn={level:2,y,m,children:[],parent:yn}; yn.children.push(mn);
+    for(let d=1;d<=dim(y,m);d++) mn.children.push({level:3,y,m,d,children:[],parent:mn});
+  }
+}
+/* ---- hyperbolic layout: each node gets a Möbius transform; children fan out ---- */
+function layout(node,T,aperture){
+  node.T=T; node.z=applyM(T,cx_(0));
+  const n=node.children.length; if(!n) return;
+  const step=S[node.level];
+  for(let i=0;i<n;i++){
+    const phi = node.level===0 ? (-Math.PI+(i+0.5)*(2*Math.PI/n))
+                               : (n===1?0:-aperture+(i+0.5)*(2*aperture/n));
+    const Tc=normalize(compose(T,compose(rot(phi),placeOut(step))));
+    const slotHalf = node.level===0 ? Math.PI/n : aperture/n;
+    const childAp=Math.max(MINAP,Math.min(MAXAP,slotHalf*EXPAND));
+    layout(node.children[i],Tc,childAp);
+  }
+}
+layout(root,ident(),Math.PI);
+
+const nodes=[],leaves=[],leafMap=new Map(),yearMap=new Map(),monthMap=new Map();
+(function collect(n){ nodes.push(n);
+  if(n.level===1)yearMap.set(n.y,n); if(n.level===2)monthMap.set(n.y+'-'+n.m,n);
+  if(n.level===3){leaves.push(n);leafMap.set(n.y+'-'+n.m+'-'+n.d,n);}
+  for(const c of n.children)collect(c);
+})(root);
+
+/* ---- canvas ---- */
+const cv=document.getElementById('cv'),hud=document.getElementById('hud'),ctx=cv.getContext('2d');
+const SIZE=560,DPR=Math.min(2,devicePixelRatio||1);
+cv.width=SIZE*DPR;cv.height=SIZE*DPR;cv.style.width=SIZE+'px';cv.style.height=SIZE+'px';ctx.scale(DPR,DPR);
+const CC=SIZE/2,RAD=SIZE/2-6;
+const toScreen=(z)=>({x:CC+z.re*RAD,y:CC-z.im*RAD});
+let V=ident(), selected=null;
+
+function geodesic(a,b){
+  if(abs2(a)<1e-18||abs2(b)<1e-18) return {line:true};
+  const ia=cscale(a,1/abs2(a));
+  const ax=a.re,ay=a.im,bx=b.re,by=b.im,c3x=ia.re,c3y=ia.im;
+  const d=2*(ax*(by-c3y)+bx*(c3y-ay)+c3x*(ay-by));
+  if(Math.abs(d)<1e-9) return {line:true};
+  const a2=ax*ax+ay*ay,b2=bx*bx+by*by,c2=c3x*c3x+c3y*c3y;
+  const ux=(a2*(by-c3y)+b2*(c3y-ay)+c2*(ay-by))/d, uy=(a2*(c3x-bx)+b2*(ax-c3x)+c2*(bx-ax))/d;
+  const c=cx_(ux,uy); return {line:false,c,r:cabs(sub(a,c))};
+}
+function strokeEdge(za,zb){
+  const a=applyM(V,za),b=applyM(V,zb); if(cabs(a)>1.05&&cabs(b)>1.05)return;
+  const g=geodesic(a,b),A=toScreen(a),B=toScreen(b);
+  if(g.line||g.r>60){ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);return;}
+  const Cc=toScreen(g.c),rp=g.r*RAD; let a0=Math.atan2(A.y-Cc.y,A.x-Cc.x),a1=Math.atan2(B.y-Cc.y,B.x-Cc.x);
+  let dd=a1-a0; while(dd>Math.PI)dd-=2*Math.PI; while(dd<-Math.PI)dd+=2*Math.PI;
+  ctx.moveTo(A.x,A.y); ctx.arc(Cc.x,Cc.y,rp,a0,a0+dd,dd<0);
+}
+let drawn=0;
+function render(){
+  ctx.clearRect(0,0,SIZE,SIZE);
+  ctx.save();ctx.beginPath();ctx.arc(CC,CC,RAD,0,2*Math.PI);ctx.clip();
+  // edges first
+  ctx.lineWidth=1; ctx.strokeStyle='rgba(150,170,230,.22)'; ctx.beginPath();
+  for(const n of nodes){ if(n.parent) strokeEdge(n.z,n.parent.z); }
+  ctx.stroke();
+  // nodes
+  drawn=0;
+  for(const n of nodes){
+    const tz=applyM(V,n.z); const a2=abs2(tz); if(a2>0.9995)continue;
+    const focus=1-a2; const s=toScreen(tz); drawn++;
+    const isNow=n.level===3&&n.y===NOW.y&&n.m===NOW.m&&n.d===NOW.d;
+    const isSel=selected&&n.level===3&&n.y===selected.y&&n.m===selected.m&&n.d===selected.d;
+    const baseR=n.level===1?4.2:n.level===2?3.2:2.4;
+    ctx.beginPath();ctx.arc(s.x,s.y,Math.max(0.7,baseR*focus),0,2*Math.PI);
+    ctx.fillStyle=isNow?'#ffd24a':isSel?'#7af29a':`hsla(${[210,150,40][n.level-1]},70%,68%,${0.3+0.65*focus})`;
+    ctx.fill();
+    const showLbl = (n.level===1&&focus>0.05)||(n.level===2&&focus>0.18)||(n.level===3&&focus>0.34);
+    if(showLbl){
+      ctx.fillStyle='rgba(232,240,255,'+Math.min(1,focus*2.2)+')';
+      ctx.font=`${Math.max(8,Math.min(16,13*focus*1.5))}px system-ui`; ctx.textAlign='center';
+      const t=n.level===1?n.y:n.level===2?monNames[n.m-1]:n.d;
+      ctx.fillText(t, s.x, s.y-baseR*focus-2);
+    }
+  }
+  ctx.restore();
+  ctx.strokeStyle='rgba(255,255,255,.22)';ctx.lineWidth=2;ctx.beginPath();ctx.arc(CC,CC,RAD,0,2*Math.PI);ctx.stroke();
+  hud.textContent=`year→month→day  nodes:${nodes.length} drawn:${drawn}  selected: ${selected?`${selected.d} ${monNames[selected.m-1]} ${selected.y}`:'—'}`;
+}
+
+/* ---- interaction: click nearest node → drill (recenter); leaf → select. drag → pan ---- */
+const evDisk=(e)=>{const r=cv.getBoundingClientRect();return cx_((e.clientX-r.left-CC)/RAD,-(e.clientY-r.top-CC)/RAD);};
+function nearestNode(world){let best=null,bd=Infinity;for(const n of nodes){if(n.level===0)continue;const d=hdist(world,n.z);if(d<bd){bd=d;best=n;}}return best;}
+let down=null,moved=0,grab=null;
+function solveDrag(worldPt,target){return normalize(compose(inv(recenter(target)),recenter(worldPt)));}
+cv.addEventListener('pointerdown',e=>{down=evDisk(e);moved=0;grab=applyM(inv(V),down);cv.setPointerCapture?.(e.pointerId);});
+cv.addEventListener('pointermove',e=>{if(!down)return;const cur=evDisk(e);moved+=cabs(sub(cur,down));if(moved>0.012&&cabs(cur)<0.999){V=solveDrag(grab,cur);render();}});
+cv.addEventListener('pointerup',e=>{const up=evDisk(e);
+  if(down&&moved<0.02&&cabs(up)<1){const w=applyM(inv(V),up);const n=nearestNode(w);
+    if(n){ V=normalize(recenter(n.z)); if(n.level===3)selected={y:n.y,m:n.m,d:n.d}; render(); }}
+  down=null;});
+
+/* ---- test API ---- */
+window.__api={
+  nodes:nodes.length, leaves:leaves.length,
+  resetView(){V=ident();render();},
+  recenterOnYear(y){const n=yearMap.get(y);if(n){V=normalize(recenter(n.z));render();}},
+  recenterOnMonth(y,m){const n=monthMap.get(y+'-'+m);if(n){V=normalize(recenter(n.z));render();}},
+  recenterOnDate(y,m,d){const n=leafMap.get(y+'-'+m+'-'+d);if(n){V=normalize(recenter(n.z));render();}},
+  screenOf(y,m,d){const n=leafMap.get(y+'-'+m+'-'+d);const tz=applyM(V,n.z);const s=toScreen(tz);const r=cv.getBoundingClientRect();
+    return {x:r.left+s.x,y:r.top+s.y,focus:1-abs2(tz)};},
+  selected(){return selected;},
+};
+render(); window.__ready=true;
+</script>
+</body>
+</html>

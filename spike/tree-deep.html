@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>spike — complete hyperbolic date+time tree (millennium→…→second)</title>
+<style>
+  html,body{margin:0;background:#0a0d16;color:#cdd6f4;font:13px system-ui;}
+  #wrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px;}
+  canvas{border-radius:50%;background:#0d1020;box-shadow:0 10px 40px rgba(0,0,0,.5);}
+  #hud{opacity:.9;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv"></canvas><div id="hud">…</div></div>
+<script>
+/* ---- complex + SU(1,1) ---- */
+const cx_=(re,im=0)=>({re,im});
+const add=(x,y)=>cx_(x.re+y.re,x.im+y.im), sub=(x,y)=>cx_(x.re-y.re,x.im-y.im);
+const mul=(x,y)=>cx_(x.re*y.re-x.im*y.im,x.re*y.im+x.im*y.re), conj=(x)=>cx_(x.re,-x.im), neg=(x)=>cx_(-x.re,-x.im);
+const abs2=(x)=>x.re*x.re+x.im*x.im, cabs=(x)=>Math.hypot(x.re,x.im);
+const cdiv=(x,y)=>{const d=abs2(y);return cx_((x.re*y.re+x.im*y.im)/d,(x.im*y.re-x.re*y.im)/d);};
+const cscale=(x,s)=>cx_(x.re*s,x.im*s);
+const ident=()=>({a:cx_(1),b:cx_(0)});
+const recenter=(p)=>{const s=Math.sqrt(Math.max(1e-12,1-abs2(p)));return {a:cx_(1/s),b:cscale(neg(p),1/s)};};
+const inv=(m)=>({a:conj(m.a),b:neg(m.b)});
+const compose=(m2,m1)=>({a:add(mul(m2.a,m1.a),mul(m2.b,conj(m1.b))),b:add(mul(m2.a,m1.b),mul(m2.b,conj(m1.a)))});
+const applyM=(m,z)=>cdiv(add(mul(m.a,z),m.b),add(mul(conj(m.b),z),conj(m.a)));
+const normalize=(m)=>{const s=Math.sqrt(Math.max(1e-12,abs2(m.a)-abs2(m.b)));return {a:cscale(m.a,1/s),b:cscale(m.b,1/s)};};
+const place=(p)=>inv(recenter(p)); const placeOut=(s)=>place(cx_(Math.tanh(s/2),0)); const rot=(p)=>({a:cx_(Math.cos(p/2),Math.sin(p/2)),b:cx_(0)});
+const rho=(z)=>2*Math.atanh(Math.min(1-1e-15,cabs(z)));
+
+/* ---- calendar math (proleptic Gregorian; works for year 0+ where JS Date fails) ---- */
+const isLeap=(y)=>(y%4===0&&y%100!==0)||y%400===0;
+const dim=(y,m)=>[31,isLeap(y)?29:28,31,30,31,30,31,31,30,31,30,31][m-1];
+const monNames=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const wdNames=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+function jdn(y,m,d){const a=Math.floor((14-m)/12),Y=y+4800-a,M=m+12*a-3;
+  return d+Math.floor((153*M+2)/5)+365*Y+Math.floor(Y/4)-Math.floor(Y/100)+Math.floor(Y/400)-32045;}
+function jdnToY(J){const a=J+32044,b=Math.floor((4*a+3)/146097),c=a-Math.floor(146097*b/4),
+  d2=Math.floor((4*c+3)/1461),e=c-Math.floor(1461*d2/4),m2=Math.floor((5*e+2)/153);return 100*b+d2-4800+Math.floor(m2/10);}
+const wd=(y,m,d)=>((jdn(y,m,d)%7)+7)%7;                 // 0=Mon … 6=Sun
+function isoWeek(y,m,d){const j=jdn(y,m,d),monJ=j-(((j%7)+7)%7),thuJ=monJ+3,iy=jdnToY(thuJ);
+  const jan4=jdn(iy,1,4),w1=jan4-(((jan4%7)+7)%7);return Math.floor((monJ-w1)/7)+1;}
+const hour12=(h)=>({pm:h>=12, h12: (h%12===0?12:h%12)});
+
+/* ---- params ---- */
+const P=new URLSearchParams(location.search);
+const FROM=+(P.get('from')||0), TO=+(P.get('to')||2400);
+const STEP=+(P.get('step')||1.4), EXPAND=5.0, MAXAP=2.5, MINAP=0.40;  // step kept small: 11 levels * 1.4 ≈ ρ15 < safe 18
+
+/* ---- range-adaptive grouping skeleton (mill→cent→dec→year), single-child groups collapse ---- */
+const root={kind:'root',children:[],parent:null};
+function find(parent,kind,val){let c=parent.children.find(x=>x.kind===kind&&x.val===val);
+  if(!c){c={kind,val,children:[],parent};parent.children.push(c);}return c;}
+for(let y=FROM;y<=TO;y++){const mill=find(root,'mill',Math.floor(y/1000)*1000);
+  const cent=find(mill,'cent',Math.floor(y/100)*100);const dec=find(cent,'dec',Math.floor(y/10)*10);find(dec,'year',y);}
+(function collapse(n){for(const c of n.children.slice())collapse(c);
+  if((n.kind==='mill'||n.kind==='cent'||n.kind==='dec')&&n.children.length===1){const c=n.children[0],p=n.parent,i=p.children.indexOf(n);p.children[i]=c;c.parent=p;}})(root);
+(function lvl(n,L){n.level=L;for(const c of n.children)lvl(c,L+1);})(root,0);
+
+/* ---- Möbius fan layout; everything below year is created lazily ---- */
+function layoutChildren(node){const n=node.children.length;if(!n)return;const step=STEP,ap=node.childAperture??Math.PI;
+  for(let i=0;i<n;i++){const phi=node.level===0?(-Math.PI+(i+0.5)*(2*Math.PI/n)):(n===1?0:-ap+(i+0.5)*(2*ap/n));
+    const c=node.children[i];c.T=normalize(compose(node.T,compose(rot(phi),placeOut(step))));c.z=applyM(c.T,cx_(0));
+    c.level=node.level+1;const slotHalf=node.level===0?Math.PI/n:ap/n;c.childAperture=Math.max(MINAP,Math.min(MAXAP,slotHalf*EXPAND));}}
+root.T=ident();root.z=cx_(0);root.childAperture=Math.PI;
+(function plc(n){if(n.children.length){layoutChildren(n);for(const c of n.children)if(c.kind!=='year')plc(c);}})(root);
+
+const mk=(parent,o)=>{const c={...o,children:[],parent};parent.children.push(c);return c;};
+function expand(node){ if(node._exp)return; node._exp=true;
+  if(node.kind==='year'){ for(let m=1;m<=12;m++) mk(node,{kind:'month',y:node.val,m}); }
+  else if(node.kind==='month'){ // group this month's days into ISO (Mon–Sun) weeks
+    const groups={}; for(let d=1;d<=dim(node.y,node.m);d++){const j=jdn(node.y,node.m,d),monJ=j-(((j%7)+7)%7);(groups[monJ]??=[]).push({d,w:wd(node.y,node.m,d)});}
+    for(const monJ of Object.keys(groups).map(Number).sort((a,b)=>a-b)){const days=groups[monJ];
+      mk(node,{kind:'week',y:node.y,m:node.m,week:isoWeek(node.y,node.m,days[0].d),days});}}
+  else if(node.kind==='week'){ for(const {d,w} of node.days.slice().sort((a,b)=>a.w-b.w)) // only valid (in-month) weekdays
+      mk(node,{kind:'weekday',y:node.y,m:node.m,d,wd:w}); }
+  else if(node.kind==='weekday'){ mk(node,{kind:'ampm',y:node.y,m:node.m,d:node.d,pm:false}); mk(node,{kind:'ampm',y:node.y,m:node.m,d:node.d,pm:true}); }
+  else if(node.kind==='ampm'){ for(let k=0;k<12;k++){const h12=(k===0?12:k);const h=node.pm?(h12%12)+12:(h12%12); mk(node,{kind:'hour',y:node.y,m:node.m,d:node.d,h,h12,pm:node.pm});} }
+  else if(node.kind==='hour'){ for(let mi=0;mi<60;mi++) mk(node,{kind:'minute',y:node.y,m:node.m,d:node.d,h:node.h,mi}); }
+  else if(node.kind==='minute'){ for(let s=0;s<60;s++) mk(node,{kind:'second',y:node.y,m:node.m,d:node.d,h:node.h,mi:node.mi,s}); }
+  if(node.children.length) layoutChildren(node);
+}
+
+/* ---- canvas ---- */
+const cv=document.getElementById('cv'),hud=document.getElementById('hud'),ctx=cv.getContext('2d');
+const SIZE=560,DPR=Math.min(2,devicePixelRatio||1);cv.width=SIZE*DPR;cv.height=SIZE*DPR;cv.style.width=SIZE+'px';cv.style.height=SIZE+'px';ctx.scale(DPR,DPR);
+const CC=SIZE/2,RAD=SIZE/2-6;const toScreen=(z)=>({x:CC+z.re*RAD,y:CC-z.im*RAD});
+let V=ident(),selected=null,focusNode=root;
+const HUE={mill:280,cent:250,dec:220,year:200,month:160,week:120,weekday:90,ampm:60,hour:40,minute:20,second:0};
+const labelOf=(n)=>({mill:n.val+'s',cent:n.val+'s',dec:n.val+'s',year:n.val,month:monNames[n.m-1],
+  week:'W'+n.week,weekday:wdNames[n.wd],ampm:n.pm?'PM':'AM',hour:n.h12+(n.pm?'pm':'am'),
+  minute:':'+String(n.mi).padStart(2,'0'),second:'.'+String(n.s).padStart(2,'0')})[n.kind];
+const fmtSel=(s)=>s?`${String(s.y).padStart(4,'0')}-${String(s.m).padStart(2,'0')}-${String(s.d).padStart(2,'0')} `+
+  `${String(s.h).padStart(2,'0')}:${String(s.mi).padStart(2,'0')}:${String(s.s).padStart(2,'0')} (${wdNames[wd(s.y,s.m,s.d)]})`:'—';
+function walk(fn){(function go(n){fn(n);for(const c of n.children)go(c);})(root);}
+function render(){ctx.clearRect(0,0,SIZE,SIZE);ctx.save();ctx.beginPath();ctx.arc(CC,CC,RAD,0,2*Math.PI);ctx.clip();
+  ctx.lineWidth=1;ctx.strokeStyle='rgba(150,170,230,.18)';ctx.beginPath();
+  walk(n=>{if(!n.parent)return;const a=applyM(V,n.z),b=applyM(V,n.parent.z);if(cabs(a)>1.05&&cabs(b)>1.05)return;const A=toScreen(a),B=toScreen(b);ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);});ctx.stroke();
+  walk(n=>{if(n.kind==='root')return;const tz=applyM(V,n.z),a2=abs2(tz);if(a2>0.9995)return;const f=1-a2,s=toScreen(tz);
+    const isSel=selected&&n.kind==='second'&&n.y===selected.y&&n.m===selected.m&&n.d===selected.d&&n.h===selected.h&&n.mi===selected.mi&&n.s===selected.s;
+    const r=Math.max(0.7,(n.level<=4?4.3:3.0-(n.level-4)*0.2)*f);
+    ctx.beginPath();ctx.arc(s.x,s.y,Math.max(0.7,r),0,2*Math.PI);ctx.fillStyle=isSel?'#7af29a':`hsla(${HUE[n.kind]},70%,68%,${0.3+0.65*f})`;ctx.fill();
+    const thr=n.level<=4?0.05:n.kind==='month'||n.kind==='week'||n.kind==='weekday'?0.16:0.30;
+    if(f>thr){ctx.fillStyle='rgba(232,240,255,'+Math.min(1,f*2.2)+')';ctx.font=`${Math.max(8,Math.min(15,12*f*1.5))}px system-ui`;ctx.textAlign='center';ctx.fillText(labelOf(n),s.x,s.y-r-2);}});
+  ctx.restore();ctx.strokeStyle='rgba(255,255,255,.22)';ctx.lineWidth=2;ctx.beginPath();ctx.arc(CC,CC,RAD,0,2*Math.PI);ctx.stroke();
+  let mat=0;walk(()=>mat++);hud.textContent=`${FROM}–${TO} · ${mat} nodes · ${fmtSel(selected)}`;}
+
+/* ---- descend toward a target, materialising lazily ---- */
+function drillPath(t){ // t = {y,m,d?,h?,mi?,s?}; descends as deep as the provided fields allow
+  let node=root; const out=[node];
+  while(node){ let nx=null;
+    if(['root','mill','cent','dec'].includes(node.kind)){
+      const want = node.children[0]?.kind==='mill'?Math.floor(t.y/1000)*1000:node.children[0]?.kind==='cent'?Math.floor(t.y/100)*100:node.children[0]?.kind==='dec'?Math.floor(t.y/10)*10:t.y;
+      nx=node.children.find(c=> c.kind==='year'?c.val===t.y : c.val===want);
+    } else { expand(node);
+      if(node.kind==='year') nx=node.children.find(c=>c.m===t.m);
+      else if(node.kind==='month'){ if(t.d==null)break; nx=node.children.find(c=>c.days.some(x=>x.d===t.d)); }
+      else if(node.kind==='week'){ nx=node.children.find(c=>c.d===t.d); }
+      else if(node.kind==='weekday'){ if(t.h==null)break; nx=node.children.find(c=>c.pm===(t.h>=12)); }
+      else if(node.kind==='ampm'){ nx=node.children.find(c=>c.h===t.h); }
+      else if(node.kind==='hour'){ if(t.mi==null)break; nx=node.children.find(c=>c.mi===t.mi); }
+      else if(node.kind==='minute'){ if(t.s==null)break; nx=node.children.find(c=>c.s===t.s); }
+    }
+    if(!nx)break; out.push(nx); node=nx;
+  }
+  return out;
+}
+const asSel=(n)=>({y:n.y,m:n.m,d:n.d,h:n.h??0,mi:n.mi??0,s:n.s??0});
+
+/* ---- mouse: click nearest node → drill+recenter; date/time node → set selection. drag → pan ---- */
+const hdist=(z,w)=>2*Math.atanh(Math.min(1-1e-15,cabs(cdiv(sub(z,w),sub(cx_(1),mul(conj(w),z))))));
+const evDisk=(e)=>{const r=cv.getBoundingClientRect();return cx_((e.clientX-r.left-CC)/RAD,-(e.clientY-r.top-CC)/RAD);};
+function nearestNode(world){let best=null,bd=Infinity;walk(n=>{if(n.kind==='root')return;const d=hdist(world,n.z);if(d<bd){bd=d;best=n;}});return best;}
+let down=null,moved=0,grab=null;const solveDrag=(w,t)=>normalize(compose(inv(recenter(t)),recenter(w)));
+cv.style.cursor='grab';
+cv.addEventListener('pointerdown',e=>{down=evDisk(e);moved=0;grab=applyM(inv(V),down);cv.setPointerCapture?.(e.pointerId);cv.style.cursor='grabbing';});
+cv.addEventListener('pointermove',e=>{if(!down)return;const cur=evDisk(e);moved+=cabs(sub(cur,down));if(moved>0.012&&cabs(cur)<0.999){V=solveDrag(grab,cur);render();}});
+cv.addEventListener('pointerup',e=>{const up=evDisk(e);cv.style.cursor='grab';
+  if(down&&moved<0.02&&cabs(up)<1){const w=applyM(inv(V),up);const n=nearestNode(w);
+    if(n){expand(n); if(n.d!=null) selected=asSel(n); V=normalize(recenter(n.z));focusNode=n;render();}}
+  down=null;});
+
+/* ---- test API ---- */
+window.__api={
+  resetView(){V=ident();focusNode=root;render();},
+  drill(y,m,d,h,mi,s){const p=drillPath({y,m,d,h,mi,s});const leaf=p[p.length-1];if(leaf&&leaf.d!=null)selected=asSel(leaf);
+    if(leaf){V=normalize(recenter(leaf.z));focusNode=leaf;render();}return leaf?leaf.kind:null;},
+  recenterOnNode(kind,val){let f=null;walk(n=>{if(!f&&n.kind===kind&&(val==null||n.val===val))f=n;});if(f){expand(f);V=normalize(recenter(f.z));focusNode=f;render();return labelOf(f);}return null;},
+  selected(){return selected;},
+  stats(){let counts={},maxBranch={},maxRho=0;walk(n=>{counts[n.kind]=(counts[n.kind]||0)+1;if(n.children.length)maxBranch[n.kind]=Math.max(maxBranch[n.kind]||0,n.children.length);const r=rho(n.z);if(r>maxRho)maxRho=r;});return{counts,maxBranch,maxRho:+maxRho.toFixed(2)};},
+  leafInfo(y,m,d,h,mi,s){const p=drillPath({y,m,d,h,mi,s});const leaf=p[p.length-1];return{depth:p.length-1,rho:+rho(leaf.z).toFixed(2),kind:leaf.kind,
+    path:p.filter(n=>n.children.length).map(n=>n.kind+':'+n.children.length)};},
+};
+render();window.__ready=true;
+</script>
+</body>
+</html>

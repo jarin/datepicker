@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase-3 spike — hyperbolic date layout + selection</title>
+<style>
+  html,body{margin:0;background:#0a0d16;color:#cdd6f4;font:13px system-ui;}
+  #wrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px;}
+  canvas{border-radius:50%;background:#0d1020;box-shadow:0 10px 40px rgba(0,0,0,.5);cursor:grab;}
+  canvas:active{cursor:grabbing;}
+  #hud{font-variant-numeric:tabular-nums;opacity:.9;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv"></canvas><div id="hud">…</div></div>
+<script>
+/* ---- complex + SU(1,1) (inlined; mirrors spike/poincare.mjs) ---- */
+const cx_=(re,im=0)=>({re,im});
+const add=(x,y)=>cx_(x.re+y.re,x.im+y.im), sub=(x,y)=>cx_(x.re-y.re,x.im-y.im);
+const mul=(x,y)=>cx_(x.re*y.re-x.im*y.im,x.re*y.im+x.im*y.re), conj=(x)=>cx_(x.re,-x.im), neg=(x)=>cx_(-x.re,-x.im);
+const abs2=(x)=>x.re*x.re+x.im*x.im, cabs=(x)=>Math.hypot(x.re,x.im);
+const cdiv=(x,y)=>{const d=abs2(y);return cx_((x.re*y.re+x.im*y.im)/d,(x.im*y.re-x.re*y.im)/d);};
+const cscale=(x,s)=>cx_(x.re*s,x.im*s);
+const ident=()=>({a:cx_(1),b:cx_(0)});
+const recenter=(p)=>{const s=Math.sqrt(Math.max(1e-12,1-abs2(p)));return {a:cx_(1/s),b:cscale(neg(p),1/s)};};
+const compose=(m2,m1)=>({a:add(mul(m2.a,m1.a),mul(m2.b,conj(m1.b))),b:add(mul(m2.a,m1.b),mul(m2.b,conj(m1.a)))});
+const applyM=(m,z)=>cdiv(add(mul(m.a,z),m.b),add(mul(conj(m.b),z),conj(m.a)));
+const normalize=(m)=>{const s=Math.sqrt(Math.max(1e-12,abs2(m.a)-abs2(m.b)));return {a:cscale(m.a,1/s),b:cscale(m.b,1/s)};};
+const hdist=(z,w)=>2*Math.atanh(Math.min(1-1e-15,cabs(cdiv(sub(z,w),sub(cx_(1),mul(conj(w),z))))));
+
+/* ---- date layout: concentric year-rings, day-of-year as angle ---- */
+const params=new URLSearchParams(location.search);
+const RANGE=+(params.get('range')||10);                 // ± years
+const NOW={y:2026,m:6,d:2};
+const isLeap=(y)=>(y%4===0&&y%100!==0)||y%400===0;
+const daysInYear=(y)=>isLeap(y)?366:365;
+const dayOfYear=(y,m,d)=>{const md=[31,isLeap(y)?29:28,31,30,31,30,31,31,30,31,30,31];let n=d-1;for(let i=0;i<m-1;i++)n+=md[i];return n;};
+const RHO0=0.8, RHO_MAX=14, dRHO=(RHO_MAX-RHO0)/(2*RANGE);
+function datePoint(y,m,d){
+  const ring=(y-NOW.y)+RANGE;                            // 0..2*RANGE (monotone in year)
+  const rho=RHO0+ring*dRHO;
+  const th=2*Math.PI*dayOfYear(y,m,d)/daysInYear(y);
+  const r=Math.tanh(rho/2);
+  return cx_(r*Math.cos(th), r*Math.sin(th));
+}
+// build the full set of dates with precomputed world points
+const DATES=[];
+for(let y=NOW.y-RANGE;y<=NOW.y+RANGE;y++){
+  const md=[31,isLeap(y)?29:28,31,30,31,30,31,31,30,31,30,31];
+  for(let m=1;m<=12;m++) for(let d=1;d<=md[m-1];d++) DATES.push({y,m,d,z:datePoint(y,m,d)});
+}
+const monNames=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+/* ---- canvas ---- */
+const cv=document.getElementById('cv'),hud=document.getElementById('hud'),ctx=cv.getContext('2d');
+const SIZE=560,DPR=Math.min(2,devicePixelRatio||1);
+cv.width=SIZE*DPR;cv.height=SIZE*DPR;cv.style.width=SIZE+'px';cv.style.height=SIZE+'px';ctx.scale(DPR,DPR);
+const CC=SIZE/2,RAD=SIZE/2-6;
+const toScreen=(z)=>({x:CC+z.re*RAD,y:CC-z.im*RAD});
+let V=recenter(datePoint(NOW.y,NOW.m,NOW.d));   // start centred on "today"
+let selected=null;
+
+function render(){
+  ctx.clearRect(0,0,SIZE,SIZE);
+  ctx.save();ctx.beginPath();ctx.arc(CC,CC,RAD,0,2*Math.PI);ctx.clip();
+  for(const dt of DATES){
+    const tz=applyM(V,dt.z); const a2=abs2(tz);
+    if(a2>0.9999) continue;
+    const focus=(1-a2);                 // ~tile size proxy
+    const s=toScreen(tz);
+    const rdot=Math.max(0.6, 5.2*focus);
+    const isNow=(dt.y===NOW.y&&dt.m===NOW.m&&dt.d===NOW.d);
+    const isSel=selected&&dt.y===selected.y&&dt.m===selected.m&&dt.d===selected.d;
+    ctx.beginPath();ctx.arc(s.x,s.y,rdot,0,2*Math.PI);
+    ctx.fillStyle=isNow?'#ffd24a':isSel?'#7af29a':`hsla(${((dt.y-NOW.y+RANGE)*37)%360},65%,68%,${0.35+0.6*focus})`;
+    ctx.fill();
+    if(focus>0.06){ // only label the focused region
+      ctx.fillStyle='rgba(230,238,255,'+Math.min(1,focus*3)+')';
+      ctx.font=`${Math.max(8,Math.min(15,12*focus*1.6))}px system-ui`;
+      ctx.textAlign='center';
+      ctx.fillText(`${dt.d} ${monNames[dt.m-1]}`, s.x, s.y-rdot-2);
+    }
+  }
+  ctx.restore();
+  ctx.strokeStyle='rgba(255,255,255,.22)';ctx.lineWidth=2;ctx.beginPath();ctx.arc(CC,CC,RAD,0,2*Math.PI);ctx.stroke();
+  hud.textContent=`±${RANGE}y (${DATES.length} dates) — selected: ${selected?`${selected.d} ${monNames[selected.m-1]} ${selected.y}`:'—'}`;
+}
+
+/* ---- hit test: nearest date (hyperbolic) to a world point ---- */
+function nearestDate(world){
+  if(cabs(world)>=1) return null;
+  let best=null,bd=Infinity;
+  for(const dt of DATES){const d=hdist(world,dt.z);if(d<bd){bd=d;best=dt;}}
+  return best;
+}
+
+/* ---- interaction: drag to pan, click (no drag) to select nearest ---- */
+const evDisk=(e)=>{const r=cv.getBoundingClientRect();return cx_((e.clientX-r.left-CC)/RAD,-(e.clientY-r.top-CC)/RAD);};
+let down=null,moved=0,grabWorld=null;
+function solveDrag(worldPt,target){const toO=recenter(worldPt);const fromO={a:recenter(target).a,b:neg(recenter(target).b)};return normalize(compose(fromO,toO));}
+cv.addEventListener('pointerdown',e=>{down=evDisk(e);moved=0;grabWorld=applyM({a:V.a,b:neg(V.b)},down);cv.setPointerCapture?.(e.pointerId);
+  // grabWorld = V^{-1}(down): invert V. (inverse of SU(1,1) {a,b} is {conj a, -b})
+  grabWorld=applyM({a:conj(V.a),b:neg(V.b)},down);});
+cv.addEventListener('pointermove',e=>{if(!down)return;const cur=evDisk(e);moved+=cabs(sub(cur,down));
+  if(moved>0.015 && cabs(cur)<0.999){V=solveDrag(grabWorld,cur);render();}});
+cv.addEventListener('pointerup',e=>{const up=evDisk(e);
+  if(down && moved<0.02 && cabs(up)<1){const w=applyM({a:conj(V.a),b:neg(V.b)},up);const dt=nearestDate(w);if(dt){selected={y:dt.y,m:dt.m,d:dt.d};render();}}
+  down=null;});
+
+/* ---- test API ---- */
+window.__api={
+  count:DATES.length,
+  resetView(){V=recenter(datePoint(NOW.y,NOW.m,NOW.d));render();},
+  recenterOnDate(y,m,d){V=recenter(datePoint(y,m,d));render();},
+  // viewport coords of a date under the current view, + a focus/size proxy
+  screenOf(y,m,d){const tz=applyM(V,datePoint(y,m,d));const s=toScreen(tz);const r=cv.getBoundingClientRect();
+    return {x:r.left+s.x,y:r.top+s.y,focus:1-abs2(tz),inside:abs2(tz)<1};},
+  selected(){return selected;},
+};
+render();
+window.__ready=true;
+</script>
+</body>
+</html>
