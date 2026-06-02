@@ -21,7 +21,7 @@ export function App() {
 
   return (
     <main className="demo">
-      <h1 className="demo-title">Wacky Date Picker</h1>
+      <h1 className="demo-title">Date Picker</h1>
 
       <WackyDatePicker value={date} onChange={setDate} />
 
